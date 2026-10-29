@@ -460,9 +460,11 @@ jobs:
           AQT_CONFIG: ${{ github.workspace }}/src/.github/qt-settings.ini
         with:
           version: ${{ env.QT_VERSION }}
-          host: linux
+          # Qt >= 6.7 publishes the Android kits under the host-independent "all_os" tree.
+          host: all_os
           target: android
           arch: android_arm64_v8a
+          aqtsource: ${{ env.AQT_SOURCE_WINDOWS }}   # aqtinstall master: Qt 6.11 per-arch repository layout
           modules: qtshadertools
           cache: true
           extra: --base https://qt.mirror.constant.com/
