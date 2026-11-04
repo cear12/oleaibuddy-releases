@@ -209,6 +209,8 @@ jobs:
         shell: pwsh
         run: |
           $extra = @($env:OLEAI_CMAKE_ARGS -split '\s+' | Where-Object { $_ })
+          # Short FetchContent dir: with Vulkan, ggml configures a nested host build whose paths pass MAX_PATH under the runner checkout (cl.exe C1083).
+          if ($IsWindows) { $extra += "-DFETCHCONTENT_BASE_DIR=$($env:RUNNER_TEMP -replace '\\','/')/oai-deps" }
           cmake --preset windows-release @extra
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
