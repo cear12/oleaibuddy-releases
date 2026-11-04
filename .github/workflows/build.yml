@@ -39,6 +39,11 @@ on:
         type: boolean
         required: false
         default: false
+      android_vulkan:
+        description: "Android: build llama.cpp with the Vulkan GPU backend (turn off if the Android build fails on Vulkan)"
+        type: boolean
+        required: false
+        default: true
       cmake_args:
         description: "Extra CMake arguments for all platforms (e.g. -DOLEAI_LLAMA_VULKAN=ON)"
         required: false
@@ -166,7 +171,7 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT }}
       # ---- OPTIONAL: ONNX Runtime backend (only when env OLEAI_WITH_ONNX == 'ON') -------------
-      # Official prebuilt release zip (include/, lib/onnxruntime.dll + .lib) -> ONNXRUNTIME_ROOT,
+      # ONNX Runtime with DirectML (scripts/get_onnxruntime_dml.ps1, NuGet; CPU-only zip as fallback) -> ONNXRUNTIME_ROOT,
       # picked up by scripts/ci/feature-args.sh. The DLL is copied next to the executables at
       # build time and installed into bin/ (backends/onnx/CMakeLists.txt).
       - name: ONNX Runtime (optional)
@@ -174,10 +179,28 @@ jobs:
         shell: pwsh
         run: |
           $ver = $env:ONNXRUNTIME_VERSION
-          $zip = Join-Path $env:RUNNER_TEMP "onnxruntime-win-x64-$ver.zip"
-          Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v$ver/onnxruntime-win-x64-$ver.zip" -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
-          "ONNXRUNTIME_ROOT=$env:RUNNER_TEMP\onnxruntime-win-x64-$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $root = $null
+          # ONNX Runtime + DirectML from NuGet (CPU and any DirectX 12 GPU); falls back to the CPU-only zip.
+          try {
+            $root = & (Join-Path $env:GITHUB_WORKSPACE "src\scripts\get_onnxruntime_dml.ps1") -Version $ver -OutDir $env:RUNNER_TEMP | Select-Object -Last 1
+          } catch {
+            Write-Warning "ONNX Runtime + DirectML failed ($($_.Exception.Message)); using the CPU-only release"
+          }
+          if (-not $root) {
+            $zip = Join-Path $env:RUNNER_TEMP "onnxruntime-win-x64-$ver.zip"
+            Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v$ver/onnxruntime-win-x64-$ver.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+            $root = Join-Path $env:RUNNER_TEMP "onnxruntime-win-x64-$ver"
+          }
+          "ONNXRUNTIME_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ---- Vulkan SDK (Windows): glslc + vulkan-1.dll for llama.cpp's Vulkan backend ----------
+      # Exports VULKAN_SDK and OLEAI_LLAMA_VULKAN=ON (scripts/ci/feature-args.sh adds -DOLEAI_LLAMA_VULKAN=ON).
+      - name: Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & (Join-Path $env:GITHUB_WORKSPACE "src\scripts\ci\install_vulkan_sdk.ps1") -Required
 
       - name: Feature arguments
         shell: bash
@@ -518,6 +541,7 @@ jobs:
           if [[ "$HAS_ANDROID_KEYSTORE" == "true" ]]; then sign="$sign -DQT_ANDROID_SIGN_AAB=ON"; fi
           # shellcheck disable=SC2046,SC2086  # feature-args.sh / $sign are lists of arguments
           cmake --preset android-arm64 $sign $(bash scripts/ci/feature-args.sh) -DOLEAI_WITH_ONNX=OFF \
+            $([[ "${{ inputs.android_vulkan }}" == "true" ]] && echo "-DOLEAI_LLAMA_VULKAN=ON") \
             ${{ needs.version.outputs.cmake_arg }}
       - name: Build + package (APK, AAB when release-signed)
         run: |
