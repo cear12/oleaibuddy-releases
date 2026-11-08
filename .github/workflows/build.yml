@@ -211,8 +211,14 @@ jobs:
           $extra = @($env:OLEAI_CMAKE_ARGS -split '\s+' | Where-Object { $_ })
           # Short FetchContent dir: with Vulkan, ggml configures a nested host build whose paths pass MAX_PATH under the runner checkout (cl.exe C1083).
           if ($IsWindows) { $extra += "-DFETCHCONTENT_BASE_DIR=$($env:RUNNER_TEMP -replace '\\','/')/oai-deps" }
-          cmake --preset windows-release @extra
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          for ($i = 1; $i -le 4; $i++) {
+            cmake --preset windows-release @extra
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq 4) { exit $LASTEXITCODE }
+            Write-Host "::warning::configure attempt $i failed (vcpkg download flake?), retrying"
+            Remove-Item -Recurse -Force (Join-Path $env:BUILD_DIR "CMakeCache.txt") -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds (20 * $i)
+          }
       - name: Build
         run: cmake --build ${{ env.BUILD_DIR }} --parallel
       - name: Test
@@ -335,8 +341,14 @@ jobs:
       - name: Configure
         run: |
           # shellcheck disable=SC2046  # feature-args.sh prints a list of arguments
-          cmake --preset unix-release -DVCPKG_TARGET_TRIPLET=x64-linux \
-            $(bash scripts/ci/feature-args.sh) ${{ needs.version.outputs.cmake_arg }}
+          for i in 1 2 3 4; do
+            cmake --preset unix-release -DVCPKG_TARGET_TRIPLET=x64-linux \
+              $(bash scripts/ci/feature-args.sh) ${{ needs.version.outputs.cmake_arg }} && exit 0
+            echo "::warning::configure attempt $i failed (vcpkg download flake?), retrying"
+            rm -rf build/unix-release/CMakeCache.txt
+            sleep $((i * 20))
+          done
+          exit 1
       - name: Build
         run: cmake --build build/unix-release --parallel
       - name: Test
@@ -401,8 +413,14 @@ jobs:
       - name: Configure
         run: |
           # shellcheck disable=SC2046  # feature-args.sh prints a list of arguments
-          cmake --preset unix-release -DVCPKG_TARGET_TRIPLET=arm64-osx -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
-            $(bash scripts/ci/feature-args.sh) ${{ needs.version.outputs.cmake_arg }}
+          for i in 1 2 3 4; do
+            cmake --preset unix-release -DVCPKG_TARGET_TRIPLET=arm64-osx -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+              $(bash scripts/ci/feature-args.sh) ${{ needs.version.outputs.cmake_arg }} && exit 0
+            echo "::warning::configure attempt $i failed (vcpkg download flake?), retrying"
+            rm -rf build/unix-release/CMakeCache.txt
+            sleep $((i * 20))
+          done
+          exit 1
       - name: Build
         run: cmake --build build/unix-release --parallel
       - name: Test
@@ -542,9 +560,15 @@ jobs:
           sign="-DQT_ANDROID_SIGN_APK=ON"
           if [[ "$HAS_ANDROID_KEYSTORE" == "true" ]]; then sign="$sign -DQT_ANDROID_SIGN_AAB=ON"; fi
           # shellcheck disable=SC2046,SC2086  # feature-args.sh / $sign are lists of arguments
-          cmake --preset android-arm64 $sign $(bash scripts/ci/feature-args.sh) -DOLEAI_WITH_ONNX=OFF \
-            $([[ "${{ inputs.android_vulkan }}" == "true" ]] && echo "-DOLEAI_LLAMA_VULKAN=ON") \
-            ${{ needs.version.outputs.cmake_arg }}
+          for i in 1 2 3 4; do
+            cmake --preset android-arm64 $sign $(bash scripts/ci/feature-args.sh) -DOLEAI_WITH_ONNX=OFF \
+              $([[ "${{ inputs.android_vulkan }}" == "true" ]] && echo "-DOLEAI_LLAMA_VULKAN=ON") \
+              ${{ needs.version.outputs.cmake_arg }} && break
+            [[ $i -eq 4 ]] && exit 1
+            echo "::warning::configure attempt $i failed (vcpkg download flake?), retrying"
+            rm -rf build/android-arm64/CMakeCache.txt
+            sleep $((i * 20))
+          done
       - name: Build + package (APK, AAB when release-signed)
         run: |
           if [[ "$HAS_ANDROID_KEYSTORE" == "true" ]]; then
